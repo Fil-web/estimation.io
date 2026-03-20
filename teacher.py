@@ -3,7 +3,24 @@ from uuid import uuid4
 
 import pandas as pd
 
-from db import UPLOADS_DIR, get_connection
+from db import UPLOADS_DIR, add_audit_log, add_report_history, get_connection, get_report_history_entries
+
+
+def _get_report_row(cursor, report_id):
+    report = cursor.execute(
+        "SELECT id, user_id, period, status FROM reports WHERE id=?",
+        (report_id,),
+    ).fetchone()
+    if not report:
+        raise ValueError("Отчет не найден")
+    return report
+
+
+def _ensure_report_editable(cursor, report_id):
+    report = _get_report_row(cursor, report_id)
+    if report["status"] == "reviewed":
+        raise ValueError("Отчет уже проверен и заблокирован для редактирования")
+    return report
 
 
 def get_teacher_reports(user_id):
@@ -47,6 +64,8 @@ def create_report(user_id, period):
         (user_id, period.strip()),
     ).fetchone()["id"]
     conn.close()
+    add_report_history(report_id, user_id, "create_report", f"Создан отчет за период {period.strip()}")
+    add_audit_log(user_id, "report", report_id, "create_report", f"Создан отчет за период {period.strip()}")
     return report_id
 
 
@@ -121,6 +140,7 @@ def _store_attachment(report_id, criteria_id, uploaded_file):
 def save_report_item(report_id, criteria_id, quantity, teacher_comment, uploaded_file=None):
     conn = get_connection()
     cursor = conn.cursor()
+    report = _ensure_report_editable(cursor, report_id)
 
     criteria = cursor.execute(
         "SELECT score FROM criteria WHERE id=?",
@@ -181,19 +201,28 @@ def save_report_item(report_id, criteria_id, quantity, teacher_comment, uploaded
     )
 
     cursor.execute(
-        "UPDATE reports SET status='draft' WHERE id=?",
+        "UPDATE reports SET status='draft', reviewer_comment=NULL, reviewer_id=NULL, reviewed_at=NULL WHERE id=?",
         (report_id,),
     )
 
     conn.commit()
     conn.close()
+    add_audit_log(
+        report["user_id"],
+        "report",
+        report_id,
+        "save_item",
+        f"Сохранен пункт {criteria_id} в отчете за период {report['period']}",
+    )
 
 
-def save_report_items_bulk(report_id, items_payload):
+def save_report_items_bulk(report_id, items_payload, actor_id=None):
     conn = get_connection()
     cursor = conn.cursor()
+    report = _ensure_report_editable(cursor, report_id)
 
     selected_ids = []
+    changed_codes = []
 
     for item in items_payload:
         if not item["selected"]:
@@ -203,10 +232,11 @@ def save_report_items_bulk(report_id, items_payload):
         selected_ids.append(criteria_id)
 
         criteria = cursor.execute(
-            "SELECT score FROM criteria WHERE id=?",
+            "SELECT code, score FROM criteria WHERE id=?",
             (criteria_id,),
         ).fetchone()
         claimed_score = float(item["quantity"]) * float(criteria["score"])
+        changed_codes.append(criteria["code"])
 
         existing = cursor.execute(
             """
@@ -271,15 +301,34 @@ def save_report_items_bulk(report_id, items_payload):
     else:
         cursor.execute("DELETE FROM report_items WHERE report_id=?", (report_id,))
 
-    cursor.execute("UPDATE reports SET status='draft' WHERE id=?", (report_id,))
+    cursor.execute(
+        """
+        UPDATE reports
+        SET status='draft', reviewer_comment=NULL, reviewer_id=NULL, reviewed_at=NULL
+        WHERE id=?
+        """,
+        (report_id,),
+    )
 
     conn.commit()
     conn.close()
+    if actor_id is not None:
+        details = (
+            f"Автосохранение черновика. Выбрано пунктов: {len(selected_ids)}."
+            + (f" Изменены критерии: {', '.join(changed_codes[:8])}" if changed_codes else "")
+        )
+        add_report_history(report_id, actor_id, "autosave_draft", details)
+        add_audit_log(actor_id, "report", report_id, "autosave_draft", details)
 
 
 def submit_report(report_id):
     conn = get_connection()
     cursor = conn.cursor()
+    report = _get_report_row(cursor, report_id)
+
+    if report["status"] == "reviewed":
+        conn.close()
+        raise ValueError("Проверенный отчет нельзя отправить повторно")
 
     items_count = cursor.execute(
         "SELECT COUNT(*) AS total FROM report_items WHERE report_id=?",
@@ -293,13 +342,18 @@ def submit_report(report_id):
     cursor.execute(
         """
         UPDATE reports
-        SET status='submitted', submitted_at=CURRENT_TIMESTAMP
+        SET
+            status='submitted',
+            submitted_at=CURRENT_TIMESTAMP,
+            reviewer_comment=NULL
         WHERE id=?
         """,
         (report_id,),
     )
     conn.commit()
     conn.close()
+    add_report_history(report_id, report["user_id"], "submit_report", "Отчет отправлен заведующему на проверку")
+    add_audit_log(report["user_id"], "report", report_id, "submit_report", f"Отчет за период {report['period']} отправлен на проверку")
     return True
 
 
@@ -308,3 +362,7 @@ def get_attachment_bytes(path):
     if not file_path.exists():
         return None
     return file_path.read_bytes()
+
+
+def get_report_history(report_id):
+    return get_report_history_entries(report_id)

@@ -195,6 +195,51 @@ def _create_tables(cursor):
         """
     )
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS report_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            actor_id INTEGER,
+            action_type TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE,
+            FOREIGN KEY (actor_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS service_note_registry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            department_id INTEGER NOT NULL,
+            period TEXT NOT NULL,
+            teacher_scope TEXT NOT NULL,
+            note_number INTEGER NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(department_id, period, teacher_scope),
+            FOREIGN KEY (department_id) REFERENCES departments(id)
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id INTEGER,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT,
+            action_type TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (actor_id) REFERENCES users(id)
+        )
+        """
+    )
+
 
 def _migrate_legacy_schema(cursor):
     if _table_exists(cursor, "users"):
@@ -349,3 +394,79 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+def add_report_history(report_id, actor_id, action_type, details=""):
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO report_history (report_id, actor_id, action_type, details)
+        VALUES (?, ?, ?, ?)
+        """,
+        (report_id, actor_id, action_type, details.strip()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_report_history_entries(report_id):
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT
+            report_history.id,
+            report_history.action_type,
+            COALESCE(report_history.details, '') AS details,
+            report_history.created_at,
+            COALESCE(users.full_name, users.username, 'Система') AS actor_name
+        FROM report_history
+        LEFT JOIN users ON users.id = report_history.actor_id
+        WHERE report_history.report_id = ?
+        ORDER BY report_history.created_at DESC, report_history.id DESC
+        """,
+        (report_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def add_audit_log(actor_id, entity_type, entity_id, action_type, details=""):
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO system_audit_log (actor_id, entity_type, entity_id, action_type, details)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            actor_id,
+            entity_type.strip(),
+            str(entity_id).strip() if entity_id is not None else None,
+            action_type.strip(),
+            details.strip(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_audit_log_entries(limit=200):
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT
+            system_audit_log.id,
+            system_audit_log.entity_type,
+            COALESCE(system_audit_log.entity_id, '') AS entity_id,
+            system_audit_log.action_type,
+            COALESCE(system_audit_log.details, '') AS details,
+            system_audit_log.created_at,
+            COALESCE(users.full_name, users.username, 'Система') AS actor_name
+        FROM system_audit_log
+        LEFT JOIN users ON users.id = system_audit_log.actor_id
+        ORDER BY system_audit_log.created_at DESC, system_audit_log.id DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

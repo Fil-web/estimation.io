@@ -1,6 +1,8 @@
+from datetime import datetime
+
 import pandas as pd
 
-from db import get_connection
+from db import add_audit_log, add_report_history, get_connection, get_report_history_entries
 
 
 def get_head_reports(head_user_id):
@@ -28,7 +30,7 @@ def get_head_reports(head_user_id):
         FROM reports
         JOIN users ON users.id = reports.user_id
         LEFT JOIN report_items ON report_items.report_id = reports.id
-        WHERE users.department_id = ? AND reports.status IN ('submitted', 'reviewed')
+        WHERE users.department_id = ? AND reports.status IN ('submitted', 'returned', 'reviewed')
         GROUP BY reports.id, reports.period, reports.status, reports.submitted_at, users.full_name, users.position
         ORDER BY reports.status, reports.submitted_at DESC
         """,
@@ -45,6 +47,7 @@ def get_report_review_data(report_id):
         """
         SELECT
             report_items.id,
+            COALESCE(criteria_groups.name, 'Без группы') AS group_name,
             criteria.code,
             criteria.criterion_name,
             criteria.base,
@@ -59,8 +62,9 @@ def get_report_review_data(report_id):
             COALESCE(report_items.review_comment, '') AS review_comment
         FROM report_items
         JOIN criteria ON criteria.id = report_items.criteria_id
+        LEFT JOIN criteria_groups ON criteria_groups.id = criteria.group_id
         WHERE report_items.report_id = ?
-        ORDER BY criteria.code
+        ORDER BY criteria_groups.code, criteria.code
         """,
         conn,
         params=(report_id,),
@@ -74,6 +78,22 @@ def review_report_item(item_id, action, review_comment, head_user_id):
 
     conn = get_connection()
     cursor = conn.cursor()
+    item = cursor.execute(
+        """
+        SELECT report_items.report_id, reports.status AS report_status
+        FROM report_items
+        JOIN reports ON reports.id = report_items.report_id
+        WHERE report_items.id=?
+        """,
+        (item_id,),
+    ).fetchone()
+    if not item:
+        conn.close()
+        raise ValueError("Пункт отчета не найден")
+    if item["report_status"] == "reviewed":
+        conn.close()
+        raise ValueError("Проверенный отчет заблокирован для изменений")
+    report_id = item["report_id"]
     cursor.execute(
         """
         UPDATE report_items
@@ -89,11 +109,67 @@ def review_report_item(item_id, action, review_comment, head_user_id):
     )
     conn.commit()
     conn.close()
+    add_report_history(
+        report_id,
+        head_user_id,
+        "review_item",
+        f"Пункт #{item_id}: {status}. {review_comment.strip()}".strip(),
+    )
+    add_audit_log(head_user_id, "report", report_id, "review_item", f"Проверен пункт #{item_id}: {status}")
+
+
+def bulk_review_report_items(report_id, item_ids, action, review_comment, head_user_id):
+    if not item_ids:
+        return 0
+
+    status = "approved" if action == "Подтвердить" else "rejected"
+    conn = get_connection()
+    cursor = conn.cursor()
+    report = cursor.execute("SELECT status FROM reports WHERE id=?", (report_id,)).fetchone()
+    if not report:
+        conn.close()
+        raise ValueError("Отчет не найден")
+    if report["status"] == "reviewed":
+        conn.close()
+        raise ValueError("Проверенный отчет заблокирован для изменений")
+    placeholders = ",".join(["?"] * len(item_ids))
+    cursor.execute(
+        f"""
+        UPDATE report_items
+        SET
+            status=?,
+            review_comment=?,
+            reviewed_by=?,
+            reviewed_at=CURRENT_TIMESTAMP,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE report_id=? AND id IN ({placeholders})
+        """,
+        [status, review_comment.strip(), head_user_id, report_id, *item_ids],
+    )
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    add_report_history(
+        report_id,
+        head_user_id,
+        "bulk_review",
+        f"Массовое действие: {status}. Изменено пунктов: {affected}. {review_comment.strip()}".strip(),
+    )
+    add_audit_log(head_user_id, "report", report_id, "bulk_review", f"Массовая проверка: {status}, пунктов {affected}")
+    return affected
 
 
 def finalize_report_review(report_id, head_user_id, reviewer_comment):
     conn = get_connection()
     cursor = conn.cursor()
+    report = cursor.execute("SELECT status FROM reports WHERE id=?", (report_id,)).fetchone()
+    if not report:
+        conn.close()
+        raise ValueError("Отчет не найден")
+    if report["status"] == "reviewed":
+        conn.close()
+        return True
+
     pending = cursor.execute(
         "SELECT COUNT(*) AS total FROM report_items WHERE report_id=? AND status='pending'",
         (report_id,),
@@ -117,6 +193,58 @@ def finalize_report_review(report_id, head_user_id, reviewer_comment):
     )
     conn.commit()
     conn.close()
+    add_report_history(report_id, head_user_id, "finalize_review", "Проверка отчета завершена")
+    add_audit_log(head_user_id, "report", report_id, "finalize_review", "Отчет переведен в статус 'Проверен'")
+    return True
+
+
+def return_report_for_revision(report_id, head_user_id, reviewer_comment):
+    comment_text = reviewer_comment.strip()
+    if not comment_text:
+        raise ValueError("Укажите комментарий для возврата на доработку")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    report = cursor.execute(
+        "SELECT status FROM reports WHERE id=?",
+        (report_id,),
+    ).fetchone()
+    if not report:
+        conn.close()
+        raise ValueError("Отчет не найден")
+    if report["status"] == "reviewed":
+        conn.close()
+        raise ValueError("Проверенный отчет нельзя вернуть на доработку")
+
+    cursor.execute(
+        """
+        UPDATE reports
+        SET
+            status='returned',
+            reviewer_id=?,
+            reviewer_comment=?,
+            reviewed_at=NULL
+        WHERE id=?
+        """,
+        (head_user_id, comment_text, report_id),
+    )
+    cursor.execute(
+        """
+        UPDATE report_items
+        SET
+            status='pending',
+            review_comment=NULL,
+            reviewed_by=NULL,
+            reviewed_at=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE report_id=?
+        """,
+        (report_id,),
+    )
+    conn.commit()
+    conn.close()
+    add_report_history(report_id, head_user_id, "return_for_revision", f"Отчет возвращен на доработку. {comment_text}")
+    add_audit_log(head_user_id, "report", report_id, "return_for_revision", "Отчет возвращен на доработку")
     return True
 
 
@@ -145,7 +273,38 @@ def get_head_reviewed_periods(head_user_id):
     return [row["period"] for row in rows]
 
 
-def get_service_note_context(head_user_id, period):
+def _normalize_teacher_scope(selected_teacher_ids=None):
+    if not selected_teacher_ids:
+        return "all"
+    return ",".join(str(int(teacher_id)) for teacher_id in sorted(set(selected_teacher_ids)))
+
+
+def _get_or_create_service_note_number(cursor, department_id, period, teacher_scope):
+    existing = cursor.execute(
+        """
+        SELECT note_number
+        FROM service_note_registry
+        WHERE department_id = ? AND period = ? AND teacher_scope = ?
+        """,
+        (department_id, period, teacher_scope),
+    ).fetchone()
+    if existing:
+        return existing["note_number"]
+
+    next_number = cursor.execute(
+        "SELECT COALESCE(MAX(note_number), 0) + 1 AS next_number FROM service_note_registry"
+    ).fetchone()["next_number"]
+    cursor.execute(
+        """
+        INSERT INTO service_note_registry (department_id, period, teacher_scope, note_number)
+        VALUES (?, ?, ?, ?)
+        """,
+        (department_id, period, teacher_scope, next_number),
+    )
+    return next_number
+
+
+def get_service_note_context(head_user_id, period, selected_teacher_ids=None, register_number=True):
     conn = get_connection()
     head = conn.execute(
         """
@@ -160,6 +319,16 @@ def get_service_note_context(head_user_id, period):
     if not head or head["department_id"] is None:
         conn.close()
         return None
+
+    teacher_scope = _normalize_teacher_scope(selected_teacher_ids)
+    note_number = None
+    if register_number:
+        note_number = _get_or_create_service_note_number(
+            conn.cursor(),
+            head["department_id"],
+            period,
+            teacher_scope,
+        )
 
     rows = conn.execute(
         """
@@ -184,14 +353,16 @@ def get_service_note_context(head_user_id, period):
         """,
         (head["department_id"], period),
     ).fetchall()
-    conn.close()
 
     teachers = []
     grouped = {}
     for row in rows:
+        if selected_teacher_ids and int(row["user_id"]) not in {int(item) for item in selected_teacher_ids}:
+            continue
         teacher = grouped.setdefault(
             row["user_id"],
             {
+                "user_id": row["user_id"],
                 "full_name": row["full_name"],
                 "position": row["position"],
                 "items": [],
@@ -210,12 +381,17 @@ def get_service_note_context(head_user_id, period):
         teacher["total_points"] += float(row["claimed_score"] or 0)
 
     teachers = list(grouped.values())
+    conn.commit()
+    conn.close()
 
     return {
         "department_name": head["department_name"] or "_________________",
         "period": period,
         "teachers": teachers,
         "head_name": head["full_name"] or "",
+        "note_number": note_number,
+        "note_date": datetime.now().strftime("%d.%m.%Y"),
+        "teacher_scope": teacher_scope,
     }
 
 
@@ -288,6 +464,7 @@ def build_service_note_html(context):
             body {{ font-family: 'Times New Roman', serif; margin: 32px; color: #111; }}
             .recipient {{ margin-bottom: 28px; line-height: 1.5; }}
             h1 {{ text-align: center; font-size: 22px; margin: 0; }}
+            .meta {{ text-align: right; margin-bottom: 20px; line-height: 1.5; }}
             .subtitle {{ text-align: center; margin: 10px 0 22px; line-height: 1.4; }}
             table {{ width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }}
             th, td {{ border: 1px solid #222; padding: 6px; vertical-align: top; }}
@@ -297,6 +474,10 @@ def build_service_note_html(context):
         </style>
     </head>
     <body>
+        <div class="meta">
+            <div>Читинский институт Байкальского государственного университета</div>
+            <div>Служебная записка № {context['note_number']} от {context['note_date']}</div>
+        </div>
         <div class="recipient">
             <div>Первому заместителю директора</div>
             <div>ЧИ ФГБОУ ВО «БГУ»</div>
@@ -322,7 +503,7 @@ def build_service_note_html(context):
             <tbody>{body}</tbody>
         </table>
         <div class="signatures">
-            <div>Заведующий кафедрой ____________ /____________________/</div>
+            <div>Заведующий кафедрой ____________ /{context['head_name'] or '____________________'}/</div>
             <div>Согласовано:</div>
             <div>Начальник отдела учебно-методического и информационного обеспечения ____________</div>
             <div>Главный специалист по кадрам ____________</div>
@@ -330,3 +511,7 @@ def build_service_note_html(context):
     </body>
     </html>
     """
+
+
+def get_report_history(report_id):
+    return get_report_history_entries(report_id)
