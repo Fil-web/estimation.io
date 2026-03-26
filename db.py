@@ -177,6 +177,7 @@ def _create_tables(cursor):
             report_id INTEGER NOT NULL,
             criteria_id INTEGER NOT NULL,
             quantity REAL NOT NULL DEFAULT 0,
+            participant_count REAL NOT NULL DEFAULT 1,
             teacher_comment TEXT,
             attachment_name TEXT,
             attachment_path TEXT,
@@ -256,6 +257,9 @@ def _migrate_legacy_schema(cursor):
         _ensure_column(cursor, "criteria", "confirmation_type", "TEXT DEFAULT 'file'")
         _ensure_column(cursor, "criteria", "is_active", "INTEGER DEFAULT 1")
 
+    if _table_exists(cursor, "report_items"):
+        _ensure_column(cursor, "report_items", "participant_count", "REAL NOT NULL DEFAULT 1")
+
 
 def _seed_reference_data(cursor):
     for code, name, group_type in GROUP_SEEDS:
@@ -263,16 +267,7 @@ def _seed_reference_data(cursor):
             "SELECT id FROM criteria_groups WHERE code=?",
             (code,),
         ).fetchone()
-        if existing_group:
-            cursor.execute(
-                """
-                UPDATE criteria_groups
-                SET name=?, group_type=?
-                WHERE code=?
-                """,
-                (name, group_type, code),
-            )
-        else:
+        if not existing_group:
             cursor.execute(
                 """
                 INSERT INTO criteria_groups (code, name, group_type)
@@ -291,32 +286,7 @@ def _seed_reference_data(cursor):
             "SELECT id FROM criteria WHERE code=?",
             (code,),
         ).fetchone()
-        params = (
-            group_map[group_code],
-            name,
-            base,
-            score,
-            score_text,
-            confirmation_type,
-            code,
-        )
-        if existing_criterion:
-            cursor.execute(
-                """
-                UPDATE criteria
-                SET
-                    group_id=?,
-                    criterion_name=?,
-                    base=?,
-                    score=?,
-                    score_text=?,
-                    confirmation_type=?,
-                    is_active=1
-                WHERE code=?
-                """,
-                params,
-            )
-        else:
+        if not existing_criterion:
             cursor.execute(
                 """
                 INSERT INTO criteria (

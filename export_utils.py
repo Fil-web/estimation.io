@@ -334,7 +334,10 @@ def build_service_note_docx(context):
             c = 3
             for item in chunk:
                 comment = item["teacher_comment"] or item["criterion_name"]
-                row_cells[c].text = f"{item['code']}\n{comment}\nКоличество: {item['quantity']}"
+                details = [f"{item['code']}", comment, f"Количество: {item['quantity']}"]
+                if float(item.get("participant_count") or 1) > 1:
+                    details.append(f"Участников: {item['participant_count']}")
+                row_cells[c].text = "\n".join(details)
                 row_cells[c + 1].text = f"{float(item['claimed_score']):.2f}"
                 c += 2
             while c < 15:
@@ -377,7 +380,10 @@ def build_service_note_pdf(context):
             ]
             for item in chunk:
                 comment = item["teacher_comment"] or item["criterion_name"]
-                row.append(f"{item['code']}\n{comment}\nКоличество: {item['quantity']}")
+                details = [f"{item['code']}", comment, f"Количество: {item['quantity']}"]
+                if float(item.get("participant_count") or 1) > 1:
+                    details.append(f"Участников: {item['participant_count']}")
+                row.append("\n".join(details))
                 row.append(f"{float(item['claimed_score']):.2f}")
             while len(row) < 15:
                 row.extend(["", ""])
@@ -420,7 +426,15 @@ def build_service_note_excel(context):
             for pos in range(6):
                 item = chunk[pos] if pos < len(chunk) else None
                 row[f"Показатель {pos + 1}: комментарий"] = (
-                    f"{item['code']}; {(item['teacher_comment'] or item['criterion_name'])}; Количество: {item['quantity']}"
+                    (
+                        f"{item['code']}; {(item['teacher_comment'] or item['criterion_name'])}; "
+                        f"Количество: {item['quantity']}"
+                        + (
+                            f"; Участников: {item['participant_count']}"
+                            if float(item.get("participant_count") or 1) > 1
+                            else ""
+                        )
+                    )
                     if item
                     else ""
                 )

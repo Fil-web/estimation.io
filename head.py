@@ -54,6 +54,7 @@ def get_report_review_data(report_id):
             criteria.score,
             criteria.score_text,
             report_items.quantity,
+            COALESCE(report_items.participant_count, 1) AS participant_count,
             report_items.teacher_comment,
             report_items.attachment_name,
             report_items.attachment_path,
@@ -340,6 +341,7 @@ def get_service_note_context(head_user_id, period, selected_teacher_ids=None, re
             criteria.criterion_name,
             COALESCE(report_items.teacher_comment, '') AS teacher_comment,
             report_items.quantity,
+            COALESCE(report_items.participant_count, 1) AS participant_count,
             report_items.claimed_score
         FROM reports
         JOIN users ON users.id = reports.user_id
@@ -375,6 +377,7 @@ def get_service_note_context(head_user_id, period, selected_teacher_ids=None, re
                 "criterion_name": row["criterion_name"],
                 "teacher_comment": row["teacher_comment"],
                 "quantity": row["quantity"],
+                "participant_count": row["participant_count"],
                 "claimed_score": row["claimed_score"],
             }
         )
@@ -406,6 +409,8 @@ def build_service_note_html(context):
         else:
             text_parts.append(f"<div>{item['criterion_name']}</div>")
         text_parts.append(f"<div class='muted'>Количество: {item['quantity']}</div>")
+        if float(item.get("participant_count") or 1) > 1:
+            text_parts.append(f"<div class='muted'>Участников: {item['participant_count']}</div>")
         return "".join(text_parts)
 
     teacher_rows = []

@@ -113,7 +113,7 @@ def render_page(user):
                     key=f"selected_{report_id}_{row.criteria_id}",
                     disabled=report["status"] == "reviewed",
                 )
-                st.caption(f"База: {row.base} | Автобалл: {row.score_text}")
+                st.caption(f"База: {row.base} | Балл за единицу: {float(row.score):.2f}")
 
                 quantity = st.number_input(
                     f"Количество для {row.code}",
@@ -123,6 +123,17 @@ def render_page(user):
                     key=f"qty_{report_id}_{row.criteria_id}",
                     disabled=report["status"] == "reviewed" or not selected,
                 )
+                participant_count = 1.0
+                if row.requires_participant_count:
+                    participant_count = st.number_input(
+                        f"Количество участников для {row.code}",
+                        min_value=1.0,
+                        value=float(row.participant_count or 1),
+                        step=1.0,
+                        key=f"participants_{report_id}_{row.criteria_id}",
+                        disabled=report["status"] == "reviewed" or not selected,
+                    )
+                    st.caption("Баллы по этому показателю будут поделены на указанное количество участников.")
                 comment = st.text_area(
                     f"Комментарий для {row.code}",
                     value=row.teacher_comment or "",
@@ -136,7 +147,7 @@ def render_page(user):
                     disabled=report["status"] == "reviewed" or not selected,
                 )
 
-                auto_score = float(quantity) * float(row.score)
+                auto_score = float(quantity) * float(row.score) / max(float(participant_count), 1.0)
                 info_col1, info_col2 = st.columns(2)
                 info_col1.caption(f"Автоматически начислится: {auto_score:.2f} баллов")
                 info_col2.caption(f"Статус пункта: {item_status_label(row.item_status)}")
@@ -155,6 +166,7 @@ def render_page(user):
                         "criteria_id": row.criteria_id,
                         "selected": selected,
                         "quantity": quantity,
+                        "participant_count": participant_count,
                         "teacher_comment": comment,
                         "uploaded_file": uploaded_file,
                     }
@@ -175,7 +187,8 @@ def render_page(user):
                 "Код": row["code"],
                 "Показатель": row["criterion_name"],
                 "Количество": item["quantity"],
-                "Баллы": float(item["quantity"]) * float(row["score"]),
+                "Участников": item["participant_count"] if row["requires_participant_count"] else "-",
+                "Баллы": float(item["quantity"]) * float(row["score"]) / max(float(item["participant_count"]), 1.0),
                 "Комментарий": item["teacher_comment"],
             }
         )
@@ -191,6 +204,7 @@ def render_page(user):
                     "criteria_id": item["criteria_id"],
                     "selected": item["selected"],
                     "quantity": item["quantity"],
+                    "participant_count": item["participant_count"],
                     "teacher_comment": item["teacher_comment"],
                     "uploaded_name": item["uploaded_file"].name if item["uploaded_file"] is not None else "",
                 }

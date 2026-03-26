@@ -17,9 +17,6 @@ def render_page(current_user=None):
     st.markdown(
         """
         <style>
-            .delete-button-host {
-                width: 100%;
-            }
             .compact-table-header {
                 font-size: 0.76rem;
                 font-weight: 700;
@@ -30,15 +27,15 @@ def render_page(current_user=None):
                 line-height: 1.12;
                 padding-top: 0.15rem;
             }
-            .delete-button-host div[data-testid="stButton"] > button {
+            div[data-testid="stButton"] > button[kind="secondary"].criterion-delete-button {
                 font-size: 0.72rem;
                 padding: 0 0.3rem !important;
                 min-height: 1.2rem;
                 height: 1.2rem;
                 line-height: 1;
-                width: 5.6rem !important;
-                min-width: 5.6rem !important;
-                max-width: 5.6rem !important;
+                width: 4.9rem !important;
+                min-width: 4.9rem !important;
+                max-width: 4.9rem !important;
                 border: 1px solid #c62828 !important;
                 background: #c62828 !important;
                 color: #ffffff !important;
@@ -48,9 +45,29 @@ def render_page(current_user=None):
                 overflow: hidden !important;
                 text-overflow: ellipsis !important;
             }
-            .delete-button-host div[data-testid="stButton"] > button p {
+            div[data-testid="stButton"] > button[kind="secondary"].criterion-edit-button {
+                font-size: 0.72rem;
+                padding: 0 0.3rem !important;
+                min-height: 1.2rem;
+                height: 1.2rem;
+                line-height: 1;
+                width: 4.9rem !important;
+                min-width: 4.9rem !important;
+                max-width: 4.9rem !important;
+                border: 1px solid #3f556b !important;
+                background: #3f556b !important;
+                color: #ffffff !important;
+                box-shadow: none !important;
+                border-radius: 0.45rem !important;
+                white-space: nowrap !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+            }
+            div[data-testid="stButton"] > button.criterion-edit-button p,
+            div[data-testid="stButton"] > button.criterion-delete-button p {
                 white-space: nowrap !important;
                 font-size: 0.72rem !important;
+                color: #ffffff !important;
             }
         </style>
         """,
@@ -60,6 +77,99 @@ def render_page(current_user=None):
     groups = get_criteria_groups()
     group_options = {f"{group['code']} - {group['name']}": group["id"] for group in groups}
     criteria_df = get_criteria_table()
+
+    @st.dialog("Редактировать критерий", width="large")
+    def edit_criterion_dialog(criterion_id):
+        dialog_groups = get_criteria_groups()
+        dialog_criteria_df = get_criteria_table()
+
+        if dialog_criteria_df.empty or not dialog_groups:
+            st.info("Критерии пока не созданы")
+            return
+
+        criterion_rows = [row for row in dialog_criteria_df.to_dict("records") if int(row["id"]) == int(criterion_id)]
+        if not criterion_rows:
+            st.error("Критерий не найден")
+            return
+
+        selected_criterion = criterion_rows[0]
+        group_id_to_label = {group["id"]: f"{group['code']} - {group['name']}" for group in dialog_groups}
+        current_group_label = group_id_to_label.get(selected_criterion["group_id"])
+        group_labels = list(group_id_to_label.values())
+        default_group_index = group_labels.index(current_group_label) if current_group_label in group_labels else 0
+
+        edit_group_label = st.selectbox(
+            "Группа",
+            options=group_labels,
+            index=default_group_index,
+            key=f"row_edit_criterion_group_{criterion_id}",
+        )
+        edit_code = st.text_input(
+            "Код критерия",
+            value=selected_criterion["code"],
+            key=f"row_edit_criterion_code_{criterion_id}",
+        )
+        edit_name = st.text_area(
+            "Наименование критерия",
+            value=selected_criterion["criterion_name"],
+            height=100,
+            key=f"row_edit_criterion_name_{criterion_id}",
+        )
+        edit_base = st.text_input(
+            "База расчета",
+            value=selected_criterion["base"],
+            key=f"row_edit_criterion_base_{criterion_id}",
+        )
+        edit_score = st.number_input(
+            "Числовое значение баллов",
+            min_value=0.0,
+            value=float(selected_criterion["score"]),
+            step=1.0,
+            key=f"row_edit_criterion_score_{criterion_id}",
+        )
+        confirmation_options = {"Файл": "file", "Текст": "text"}
+        current_confirmation_label = "Файл" if selected_criterion["confirmation_type"] == "Файл" else "Текст"
+        edit_confirmation_label = st.selectbox(
+            "Тип подтверждения",
+            options=list(confirmation_options.keys()),
+            index=list(confirmation_options.keys()).index(current_confirmation_label),
+            key=f"row_edit_criterion_confirmation_{criterion_id}",
+        )
+        edit_active = st.checkbox(
+            "Критерий активен",
+            value=selected_criterion["is_active"] == "Да",
+            key=f"row_edit_criterion_active_{criterion_id}",
+        )
+
+        save_col, delete_col = st.columns(2)
+        if save_col.button("Сохранить изменения", key=f"row_update_criterion_{criterion_id}", type="primary"):
+            if not all([edit_code.strip(), edit_name.strip(), edit_base.strip()]):
+                st.warning("Заполните код, название и базу")
+            else:
+                selected_group_id = next(
+                    group["id"] for group in dialog_groups if group_id_to_label[group["id"]] == edit_group_label
+                )
+                update_criterion(
+                    criterion_id=selected_criterion["id"],
+                    group_id=selected_group_id,
+                    code=edit_code,
+                    name=edit_name,
+                    base=edit_base,
+                    score=edit_score,
+                    confirmation_type=confirmation_options[edit_confirmation_label],
+                    is_active=edit_active,
+                    actor_id=(current_user or {}).get("id"),
+                )
+                st.success("Критерий обновлен")
+                st.rerun()
+        if delete_col.button("Удалить критерий", key=f"row_delete_criterion_{criterion_id}"):
+            try:
+                delete_criterion(selected_criterion["id"], actor_id=(current_user or {}).get("id"))
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.success("Критерий удален")
+                st.rerun()
 
     @st.dialog("Группы", width="large")
     def groups_dialog():
@@ -154,11 +264,6 @@ def render_page(current_user=None):
             step=1.0,
             key="dialog_add_criterion_score",
         )
-        score_text = st.text_input(
-            "Текст баллов",
-            placeholder="10 на коллектив авторов",
-            key="dialog_add_criterion_score_text",
-        )
         confirmation_type = st.selectbox(
             "Тип подтверждения",
             options=["file", "text"],
@@ -169,8 +274,8 @@ def render_page(current_user=None):
         if st.button("Сохранить критерий", key="dialog_save_criterion", type="primary"):
             if not group_options:
                 st.warning("Сначала добавьте группу")
-            elif not all([code.strip(), name.strip(), base.strip(), score_text.strip()]):
-                st.warning("Заполните код, название, базу и текст баллов")
+            elif not all([code.strip(), name.strip(), base.strip()]):
+                st.warning("Заполните код, название и базу")
             else:
                 create_criterion(
                     group_id=group_options[selected_group],
@@ -178,7 +283,6 @@ def render_page(current_user=None):
                     name=name,
                     base=base,
                     score=score,
-                    score_text=score_text,
                     confirmation_type=confirmation_type,
                     actor_id=(current_user or {}).get("id"),
                 )
@@ -236,11 +340,6 @@ def render_page(current_user=None):
             step=1.0,
             key="dialog_edit_criterion_score",
         )
-        edit_score_text = st.text_input(
-            "Текст баллов",
-            value=selected_criterion["score_text"],
-            key="dialog_edit_criterion_score_text",
-        )
         confirmation_options = {"Файл": "file", "Текст": "text"}
         current_confirmation_label = "Файл" if selected_criterion["confirmation_type"] == "Файл" else "Текст"
         edit_confirmation_label = st.selectbox(
@@ -257,22 +356,21 @@ def render_page(current_user=None):
 
         criterion_btn1, criterion_btn2 = st.columns(2)
         if criterion_btn1.button("Сохранить", key="dialog_update_criterion", type="primary"):
-            if not all([edit_code.strip(), edit_name.strip(), edit_base.strip(), edit_score_text.strip()]):
-                st.warning("Заполните код, название, базу и текст баллов")
+            if not all([edit_code.strip(), edit_name.strip(), edit_base.strip()]):
+                st.warning("Заполните код, название и базу")
             else:
                 selected_group_id = next(
                     group["id"] for group in groups if group_id_to_label[group["id"]] == edit_group_label
                 )
                 update_criterion(
-                    selected_criterion["id"],
-                    selected_group_id,
-                    edit_code,
-                    edit_name,
-                    edit_base,
-                    edit_score,
-                    edit_score_text,
-                    confirmation_options[edit_confirmation_label],
-                    edit_active,
+                    criterion_id=selected_criterion["id"],
+                    group_id=selected_group_id,
+                    code=edit_code,
+                    name=edit_name,
+                    base=edit_base,
+                    score=edit_score,
+                    confirmation_type=confirmation_options[edit_confirmation_label],
+                    is_active=edit_active,
                     actor_id=(current_user or {}).get("id"),
                 )
                 st.success("Критерий обновлен")
@@ -309,9 +407,8 @@ def render_page(current_user=None):
     if criteria_table.empty:
         st.info("Критерии пока не созданы")
     else:
-        header_cols = st.columns([0.75, 2.55, 1.25, 0.75, 0.95, 0.75, 1.0, 1.5])
+        header_cols = st.columns([2.55, 1.2, 0.8, 0.95, 0.8, 1.1, 2.8])
         headers = [
-            "Код",
             "Наименование",
             "База расчета",
             "Балл",
@@ -324,26 +421,37 @@ def render_page(current_user=None):
             col.markdown(f"<div class='compact-table-header'>{title}</div>", unsafe_allow_html=True)
 
         for row in criteria_table.to_dict("records"):
-            row_cols = st.columns([0.75, 2.55, 1.25, 0.75, 0.95, 0.75, 1.0, 1.5])
-            row_cols[0].markdown(f"<div class='compact-table-cell'>{row['Код']}</div>", unsafe_allow_html=True)
-            row_cols[1].markdown(
+            row_cols = st.columns([2.55, 1.2, 0.8, 0.95, 0.8, 1.1, 2.8])
+            row_cols[0].markdown(
                 f"<div class='compact-table-cell'>{row['Наименование']}</div>",
                 unsafe_allow_html=True,
             )
-            row_cols[2].markdown(f"<div class='compact-table-cell'>{row['База расчета']}</div>", unsafe_allow_html=True)
-            row_cols[3].markdown(f"<div class='compact-table-cell'>{row['Балл за единицу']}</div>", unsafe_allow_html=True)
-            row_cols[4].markdown(
+            row_cols[1].markdown(f"<div class='compact-table-cell'>{row['База расчета']}</div>", unsafe_allow_html=True)
+            row_cols[2].markdown(f"<div class='compact-table-cell'>{row['Балл за единицу']}</div>", unsafe_allow_html=True)
+            row_cols[3].markdown(
                 f"<div class='compact-table-cell'>{row['Тип подтверждения']}</div>",
                 unsafe_allow_html=True,
             )
-            row_cols[5].markdown(f"<div class='compact-table-cell'>{row['Активен']}</div>", unsafe_allow_html=True)
-            row_cols[6].markdown(f"<div class='compact-table-cell'>{row['Группа']}</div>", unsafe_allow_html=True)
-            row_cols[7].markdown("<div class='delete-button-host'>", unsafe_allow_html=True)
-            if row_cols[7].button(
+            row_cols[4].markdown(f"<div class='compact-table-cell'>{row['Активен']}</div>", unsafe_allow_html=True)
+            row_cols[5].markdown(f"<div class='compact-table-cell'>{row['Группа']}</div>", unsafe_allow_html=True)
+            action_col1, action_col2 = row_cols[6].columns([1, 1], gap="small")
+            edit_clicked = action_col1.button(
+                "Изменить",
+                key=f"edit_criterion_row_{row['id']}",
+                use_container_width=True,
+                type="secondary",
+            )
+            delete_clicked = action_col2.button(
                 "Удалить",
                 key=f"delete_criterion_row_{row['id']}",
-                use_container_width=False,
-            ):
+                use_container_width=True,
+                type="secondary",
+            )
+
+            if edit_clicked:
+                edit_criterion_dialog(row["id"])
+
+            if delete_clicked:
                 try:
                     delete_criterion(row["id"], actor_id=(current_user or {}).get("id"))
                 except ValueError as exc:
@@ -351,5 +459,4 @@ def render_page(current_user=None):
                 else:
                     st.success(f"Критерий {row['Код']} удален")
                     st.rerun()
-            row_cols[7].markdown("</div>", unsafe_allow_html=True)
             st.divider()

@@ -23,6 +23,30 @@ def _ensure_report_editable(cursor, report_id):
     return report
 
 
+def _requires_participant_count(score_text="", base="", criterion_name="", code=""):
+    normalized_parts = [
+        str(score_text or "").lower(),
+        str(base or "").lower(),
+        str(criterion_name or "").lower(),
+        str(code or "").lower(),
+    ]
+    normalized_text = " | ".join(normalized_parts)
+    markers = [
+        "на коллектив",
+        "коллектив авторов",
+        "коллектив сотрудников",
+        "коллектив",
+        "авторов",
+        "сотрудников",
+    ]
+    return any(marker in normalized_text for marker in markers)
+
+
+def _calculate_claimed_score(quantity, score, participant_count=1):
+    safe_participant_count = max(float(participant_count or 1), 1.0)
+    return float(quantity) * float(score) / safe_participant_count
+
+
 def get_teacher_reports(user_id):
     conn = get_connection()
     df = pd.read_sql_query(
@@ -105,6 +129,7 @@ def get_report_form_data(report_id):
             criteria.confirmation_type,
             report_items.id AS item_id,
             COALESCE(report_items.quantity, 0) AS quantity,
+            COALESCE(report_items.participant_count, 1) AS participant_count,
             COALESCE(report_items.teacher_comment, '') AS teacher_comment,
             COALESCE(report_items.attachment_name, '') AS attachment_name,
             COALESCE(report_items.attachment_path, '') AS attachment_path,
@@ -123,6 +148,15 @@ def get_report_form_data(report_id):
         params=(report_id,),
     )
     conn.close()
+    df["requires_participant_count"] = df.apply(
+        lambda row: _requires_participant_count(
+            row.get("score_text"),
+            row.get("base"),
+            row.get("criterion_name"),
+            row.get("code"),
+        ),
+        axis=1,
+    )
     return df
 
 
@@ -137,16 +171,21 @@ def _store_attachment(report_id, criteria_id, uploaded_file):
     return safe_name, str(file_path)
 
 
-def save_report_item(report_id, criteria_id, quantity, teacher_comment, uploaded_file=None):
+def save_report_item(report_id, criteria_id, quantity, teacher_comment, uploaded_file=None, participant_count=1):
     conn = get_connection()
     cursor = conn.cursor()
     report = _ensure_report_editable(cursor, report_id)
 
     criteria = cursor.execute(
-        "SELECT score FROM criteria WHERE id=?",
+        "SELECT score, score_text FROM criteria WHERE id=?",
         (criteria_id,),
     ).fetchone()
-    claimed_score = float(quantity) * float(criteria["score"])
+    effective_participant_count = (
+        float(participant_count)
+        if _requires_participant_count(criteria["score_text"])
+        else 1.0
+    )
+    claimed_score = _calculate_claimed_score(quantity, criteria["score"], effective_participant_count)
 
     existing = cursor.execute(
         """
@@ -169,6 +208,7 @@ def save_report_item(report_id, criteria_id, quantity, teacher_comment, uploaded
             report_id,
             criteria_id,
             quantity,
+            participant_count,
             teacher_comment,
             attachment_name,
             attachment_path,
@@ -176,9 +216,10 @@ def save_report_item(report_id, criteria_id, quantity, teacher_comment, uploaded
             status,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
         ON CONFLICT(report_id, criteria_id) DO UPDATE SET
             quantity=excluded.quantity,
+            participant_count=excluded.participant_count,
             teacher_comment=excluded.teacher_comment,
             attachment_name=excluded.attachment_name,
             attachment_path=excluded.attachment_path,
@@ -193,6 +234,7 @@ def save_report_item(report_id, criteria_id, quantity, teacher_comment, uploaded
             report_id,
             criteria_id,
             float(quantity),
+            effective_participant_count,
             teacher_comment.strip(),
             attachment_name,
             attachment_path,
@@ -232,10 +274,15 @@ def save_report_items_bulk(report_id, items_payload, actor_id=None):
         selected_ids.append(criteria_id)
 
         criteria = cursor.execute(
-            "SELECT code, score FROM criteria WHERE id=?",
+            "SELECT code, score, score_text FROM criteria WHERE id=?",
             (criteria_id,),
         ).fetchone()
-        claimed_score = float(item["quantity"]) * float(criteria["score"])
+        effective_participant_count = (
+            float(item["participant_count"])
+            if _requires_participant_count(criteria["score_text"])
+            else 1.0
+        )
+        claimed_score = _calculate_claimed_score(item["quantity"], criteria["score"], effective_participant_count)
         changed_codes.append(criteria["code"])
 
         existing = cursor.execute(
@@ -261,16 +308,18 @@ def save_report_items_bulk(report_id, items_payload, actor_id=None):
                 report_id,
                 criteria_id,
                 quantity,
-                teacher_comment,
+                participant_count,
+                                                                                                                                                                                    teacher_comment,
                 attachment_name,
                 attachment_path,
                 claimed_score,
                 status,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
             ON CONFLICT(report_id, criteria_id) DO UPDATE SET
                 quantity=excluded.quantity,
+                participant_count=excluded.participant_count,
                 teacher_comment=excluded.teacher_comment,
                 attachment_name=excluded.attachment_name,
                 attachment_path=excluded.attachment_path,
@@ -285,6 +334,7 @@ def save_report_items_bulk(report_id, items_payload, actor_id=None):
                 report_id,
                 criteria_id,
                 float(item["quantity"]),
+                effective_participant_count,
                 item["teacher_comment"].strip(),
                 attachment_name,
                 attachment_path,

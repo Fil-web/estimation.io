@@ -197,6 +197,8 @@ def render_page(user):
                         selected_item_ids.append(int(row.id))
                     st.markdown(f"**{row.code}**. {row.criterion_name}")
                     st.caption(f"Количество: {row.quantity} | Баллы: {row.claimed_score:.2f} | База: {row.base}")
+                    if float(row.participant_count or 1) > 1:
+                        st.caption(f"Количество участников: {row.participant_count}")
                     st.caption(f"Статус пункта: {item_status_label(row.status)}")
                     if row.teacher_comment:
                         st.write(f"Комментарий преподавателя: {row.teacher_comment}")

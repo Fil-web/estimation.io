@@ -241,11 +241,13 @@ def delete_criteria_group(group_id, actor_id=None):
         add_audit_log(actor_id, "criteria_group", group_id, "delete_group", f"Удалена группа {group['code']} {group['name']}")
 
 
-def create_criterion(group_id, code, name, base, score, score_text, confirmation_type, actor_id=None):
+def create_criterion(group_id, code, name, base, score, score_text=None, confirmation_type="file", actor_id=None):
     conn = get_connection()
     cursor = conn.cursor()
     criterion_code = code.strip()
     criterion_name = name.strip()
+    normalized_score = float(score)
+    normalized_score_text = str(int(normalized_score)) if normalized_score.is_integer() else str(normalized_score)
     cursor.execute(
         """
         INSERT INTO criteria (group_id, code, criterion_name, base, score, score_text, confirmation_type, is_active)
@@ -256,8 +258,8 @@ def create_criterion(group_id, code, name, base, score, score_text, confirmation
             criterion_code,
             criterion_name,
             base.strip(),
-            float(score),
-            score_text.strip(),
+            normalized_score,
+            normalized_score_text,
             confirmation_type,
         ),
     )
@@ -267,11 +269,24 @@ def create_criterion(group_id, code, name, base, score, score_text, confirmation
     add_audit_log(actor_id, "criterion", criterion_id, "create_criterion", f"Создан критерий {criterion_code} {criterion_name}")
 
 
-def update_criterion(criterion_id, group_id, code, name, base, score, score_text, confirmation_type, is_active, actor_id=None):
+def update_criterion(
+    criterion_id,
+    group_id,
+    code,
+    name,
+    base,
+    score,
+    score_text=None,
+    confirmation_type="file",
+    is_active=True,
+    actor_id=None,
+):
     conn = get_connection()
     cursor = conn.cursor()
     criterion_code = code.strip()
     criterion_name = name.strip()
+    normalized_score = float(score)
+    normalized_score_text = str(int(normalized_score)) if normalized_score.is_integer() else str(normalized_score)
     cursor.execute(
         """
         UPDATE criteria
@@ -291,8 +306,8 @@ def update_criterion(criterion_id, group_id, code, name, base, score, score_text
             criterion_code,
             criterion_name,
             base.strip(),
-            float(score),
-            score_text.strip(),
+            normalized_score,
+            normalized_score_text,
             confirmation_type,
             1 if is_active else 0,
             criterion_id,
