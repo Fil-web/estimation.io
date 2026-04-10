@@ -122,18 +122,8 @@ def render_page(current_user=None):
             department_name_for_user = None
             st.caption("Сначала добавьте кафедру")
 
-        st.caption("Если нужной кафедры нет в списке, добавьте ее ниже.")
-        new_department_name = st.text_input("Новая кафедра", key="dialog_new_department_name")
-        if st.button("Добавить кафедру", key="dialog_add_department_button"):
-            if new_department_name.strip():
-                create_department(new_department_name, actor_id=(current_user or {}).get("id"))
-                st.success("Кафедра сохранена")
-                st.rerun()
-            else:
-                st.warning("Введите название кафедры")
-
         if st.button("Создать пользователя", key="dialog_create_user", type="primary"):
-            if not departments:
+            if not dialog_departments:
                 st.warning("Сначала добавьте хотя бы одну кафедру")
             elif not all([full_name.strip(), username.strip(), password]):
                 st.warning("Заполните ФИО, логин и пароль")
@@ -154,11 +144,24 @@ def render_page(current_user=None):
                     st.success("Пользователь создан")
                     st.rerun()
 
-    action_col1, action_col2 = st.columns(2)
+    @st.dialog("Добавить кафедру", width="small")
+    def add_department_dialog():
+        new_department_name = st.text_input("Название кафедры", key="dialog_new_department_name")
+        if st.button("Сохранить кафедру", key="dialog_add_department_button", type="primary"):
+            if new_department_name.strip():
+                create_department(new_department_name, actor_id=(current_user or {}).get("id"))
+                st.success("Кафедра сохранена")
+                st.rerun()
+            else:
+                st.warning("Введите название кафедры")
+
+    action_col1, action_col2, action_col3 = st.columns(3)
 
     if action_col1.button("Назначить новый пароль", use_container_width=True):
         reset_password_dialog()
-    if action_col2.button("Добавить пользователя", use_container_width=True):
+    if action_col2.button("Добавить кафедру", use_container_width=True):
+        add_department_dialog()
+    if action_col3.button("Добавить пользователя", use_container_width=True):
         add_user_dialog()
 
     st.divider()
